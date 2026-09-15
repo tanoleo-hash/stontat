@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Stontat</title>
+  <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
+  <style>
+    body { margin: 0; overflow: hidden; font-family: sans-serif; }
+    
+    /* Crosshair */
+    #crosshair {
+      position: absolute; top: 50%; left: 50%;
+      width: 10px; height: 10px;
+      margin: -5px 0 0 -5px;
+      background: rgba(255, 255, 255, 0.8);
+      border-radius: 50%; pointer-events: none; z-index: 10;
+    }
+
+    /* Top Bar & Settings Display */
+    #topBar {
+      position: absolute; top: 10px; left: 10px; right: 10px;
+      padding: 10px; background: rgba(0, 0, 0, 0.6); color: white;
+      display: flex; justify-content: space-between; align-items: center;
+      border-radius: 5px; z-index: 10;
+    }
+
+    /* Modals (Menu, Settings, Block Creator) */
+    .modal {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(20, 20, 20, 0.95); color: white;
+      padding: 20px; border-radius: 8px; text-align: center;
+      display: none; z-index: 20; min-width: 250px;
+    }
+    .modal button, .modal input, .modal select {
+      margin: 8px 0; width: 100%; padding: 8px;
+      box-sizing: border-box; background: #333; color: white; border: 1px solid #555;
+    }
+    .modal button { cursor: pointer; background: #47a036; font-weight: bold; }
+    .modal button:hover { background: #52b043; }
+
+    #mainMenu { display: block; } /* Start in Main Menu */
+  </style>
+</head>
+<body>
+
+  <div id="crosshair"></div>
+
+  <!-- Top Bar Displaying Current Game Settings -->
+  <div id="topBar">
+    <div><strong>Game:</strong> Stontat | <strong>Block:</strong> <span id="currentBlockDisplay">Wood</span></div>
+    <div><strong>Speed:</strong> <span id="speedDisplay">Normal</span> | <strong>Time:</strong> <span id="timeDisplay">Day</span></div>
+    <button onclick="openMenu()" style="background:#444; color:white; border:none; padding:5px 10px; cursor:pointer;">Menu</button>
+  </div>
+
+  <!-- Main Menu Modal -->
+  <div id="mainMenu" class="modal">
+    <h2>STONTAT</h2>
+    <button onclick="startGame()">Start / Resume</button>
+    <button onclick="openSettings()">Settings</button>
+    <button onclick="openBlockCreator()">Block Create</button>
+    <button onclick="saveWorld()">Save World (IndexedDB)</button>
+    <button onclick="loadWorld()">Load World (IndexedDB)</button>
+  </div>
+
+  <!-- Settings Modal -->
+  <div id="settingsModal" class="modal">
+    <h3>Settings</h3>
+    <label>Speed:</label>
+    <select id="speedSelect" onchange="applySettings()">
+      <option value="0.15">Normal</option>
+      <option value="0.08">Slow</option>
+      <option value="0.25">Fast</option>
+    </select>
+    <label>Time of Day:</label>
+    <select id="timeSelect" onchange="applySettings()">
+      <option value="day">Day (Sun)</option>
+      <option value="night">Night (Moon)</option>
+    </select>
+    <button onclick="closeModals()">Back</button>
+  </div>
+
+  <!-- Custom Block Creator Modal -->
+  <div id="blockCreatorModal" class="modal">
+    <h3>Create Custom Block</h3>
+    <input type="text" id="customBlockName" placeholder="Block Name (e.g., Gold)">
+    <label>Choose Color:</label>
+    <input type="color" id="customBlockColor" value="#ffd700">
+    <button onclick="createNewBlock()">Add Block</button>
+    <button onclick="closeModals()">Cancel</button>
+  </div>
+
+  <!-- 3D Scene -->
+  <a-scene id="scene" cursor="rayOrigin: mouse" raycaster="objects: .collidable">
+    
+    <!-- Sun and Moon System -->
+    <a-entity id="sun" geometry="primitive: sphere; radius: 3" material="color: #ffde59; shader: flat" position="0 40 -50"></a-entity>
+    <a-entity id="moon" geometry="primitive: sphere; radius: 2" material="color: #dddddd; shader: flat" position="0 -40 50"></a-entity>
+    <a-light id="globalLight" type="ambient" color="#fff" intensity="0.8"></a-light>
+    
+    <a-sky id="sky" color="#87CEEB"></a-sky>
+
+    <!-- Camera Controls (Arrow Keys Enabled) -->
+    <a-entity id="player" position="0 1.6 5">
+      <a-entity id="cam" camera look-controlsWASD-controls="acceleration: 15">
+        <a-entity raycaster="objects: .collidable" cursor="hasCursor: false" position="0 0 -1"
+                  geometry="primitive: ring; radiusInner: 0.01; radiusOuter: 0.02"
+                  material="color: white; shader: flat"></a-entity>
+      </a-entity>
+    </a-entity>
+
+    <!-- Base World Elements (River & Hill) -->
+    <!-- River (Blue Water) -->
+    <a-box class="collidable" position="0 -0.4 0" width="4" height="0.2" depth="30" color="#2b5c8f"></a-box>
+    <!-- Hill Structure -->
+    <a-box class="collidable" position="-8 0.5 -5" width="6" height="2" depth="6" color="#557a2b"></a-box>
+    <a-box class="collidable" position="-8 1.5 -5" width="4" height="1" depth="4" color="#557a2b"></a-box>
+
+  </a-scene>
+
+  <script>
+    let db;
+    let selectedColor = '#8d6e63'; // Default Wood Color
+    let moveSpeed = 0.15;
+    let availableBlocks = { 'Wood': '#8d6e63', 'Grass': '#557a2b', 'Stone': '#777777' };
+
+    // Initialize IndexedDB
+    const request = indexedDB.open("StontatDB", 1);
+    request.onupgradeneeded = (e) => {
+      db = e.target.result;
+      db.createObjectStore("world", { keyPath: "id" });
+    };
+    request.onsuccess = (e) => { db = e.target.result; };
+
+    // Key Controls: Arrow Keys Movement & Side Look
+    const player = document.getElementById('player');
+    window.addEventListener('keydown', (e) => {
+      let pos = player.getAttribute('position');
+      let rot = player.getAttribute('rotation');
+
+      if (e.key === "ArrowUp") pos.z -= moveSpeed;
+      if (e.key === "ArrowDown") pos.z += moveSpeed;
+      if (e.key === "ArrowLeft") pos.x -= moveSpeed; // Left movement
+      if (e.key === "ArrowRight") pos.x += moveSpeed; // Right movement
+      if (e.key === "a" || e.key === "A") rot.y += 3; // Turn view left
+      if (e.key === "d" || e.key === "D") rot.y -= 3; // Turn view right
+
+      player.setAttribute('position', pos);
+      player.setAttribute('rotation', rot);
+    });
+
+    // Build Ground Blocks
+    const scene = document.getElementById('scene');
+    for (let x = -15; x <= 15; x += 1) {
+      for (let z = -15; z <= 15; z += 1) {
+        if (x >= -2 && x <= 2) continue; // Leave room for River
+        let block = document.createElement('a-box');
+        block.setAttribute('position', `${x} -0.5 ${z}`);
+        block.setAttribute('color', '#557a2b');
+        block.setAttribute('class', 'collidable');
+        scene.appendChild(block);
+      }
+    }
+
+    // Interaction: Left Click (Build), Right Click (Destroy)
+    window.addEventListener('click', (e) => {
+      if (document.getElementById('mainMenu').style.display === 'block') return;
+      
+      let cursor = document.querySelector('[raycaster]').components.raycaster;
+      let intersection = cursor.getIntersection(document.querySelector('a-scene'));
+
+      if (intersection && intersection.object.el.classList.contains('collidable')) {
+        let el = intersection.object.el;
+        
+        // Build Block
+        let p = intersection.point;
+        let newBlock = document.createElement('a-box');
+        let normal = intersection.face.normal;
+        newBlock.setAttribute('position', `${Math.round(p.x + normal.x*0.5)} ${Math.round(p.y + normal.y*0.5)} ${Math.round(p.z + normal.z*0.5)}`);
+        newBlock.setAttribute('color', selectedColor);
+        newBlock.setAttribute('class', 'collidable');
+        scene.appendChild(newBlock);
+      }
+    });
+
+    // Right-Click Event to Destroy Block
+    window.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      let cursor = document.querySelector('[raycaster]').components.raycaster;
+      let intersection = cursor.getIntersection(document.querySelector('a-scene'));
+
+      if (intersection && intersection.object.el.classList.contains('collidable')) {
+        let el = intersection.object.el;
+        if (el.getAttribute('position').y > -0.5) { // Prevent ground destruction
+          el.parentNode.removeChild(el);
+        }
+      }
+    });
+
+    // UI & Modal Management
+    function openMenu() { document.getElementById('mainMenu').style.display = 'block'; }
+    function closeModals() {
+      document.getElementById('mainMenu').style.display = 'none';
+      document.getElementById('settingsModal').style.display = 'none';
+      document.getElementById('blockCreatorModal').style.display = 'none';
+    }
+    function startGame() { closeModals(); }
+    function openSettings() { closeModals(); document.getElementById('settingsModal').style.display = 'block'; }
+    function openBlockCreator() { closeModals(); document.getElementById('blockCreatorModal').style.display = 'block'; }
+
+    // Settings Application
+    function applySettings() {
+      moveSpeed = parseFloat(document.getElementById('speedSelect').value);
+      let speedText = document.getElementById('speedSelect').selectedOptions[0].text;
+      document.getElementById('speedDisplay').innerText = speedText;
+
+      let time = document.getElementById('timeSelect').value;
+      let sky = document.getElementById('sky');
+      let light = document.getElementById('globalLight');
+
+      if (time === 'night') {
+        sky.setAttribute('color', '#050515');
+        light.setAttribute('intensity', '0.2');
+        document.getElementById('timeDisplay').innerText = "Night";
+      } else {
+        sky.setAttribute('color', '#87CEEB');
+        light.setAttribute('intensity', '0.8');
+        document.getElementById('timeDisplay').innerText = "Day";
+      }
+    }
+
+    // Custom Block Creator
+    function createNewBlock() {
+      let name = document.getElementById('customBlockName').value || "Custom";
+      let color = document.getElementById('customBlockColor').value;
+      selectedColor = color;
+      document.getElementById('currentBlockDisplay').innerText = name;
+      closeModals();
+    }
+
+    // IndexedDB: Save World
+    function saveWorld() {
+      let blocks = [];
+      document.querySelectorAll('a-box.collidable').forEach((b, idx) => {
+        blocks.push({ id: idx, pos: b.getAttribute('position'), color: b.getAttribute('color') });
+      });
+      let tx = db.transaction("world", "readwrite");
+      tx.objectStore("world").put({ id: "current_save", data: blocks });
+      alert("Stontat World Saved Successfully!");
+      closeModals();
+    }
+
+    // IndexedDB: Load World
+    function loadWorld() {
+      let tx = db.transaction("world", "readonly");
+      let req = tx.objectStore("world").get("current_save");
+      req.onsuccess = () => {
+        if (req.result) {
+          document.querySelectorAll('a-box.collidable').forEach(b => b.parentNode.removeChild(b));
+          req.result.data.forEach(bData => {
+            let b = document.createElement('a-box');
+            b.setAttribute('position', bData.pos);
+            b.setAttribute('color', bData.color);
+            b.setAttribute('class', 'collidable');
+            scene.appendChild(b);
+          });
+          alert("Stontat World Loaded!");
+          closeModals();
+        } else {
+          alert("No save data found!");
+        }
+      };
+    }
+  </script>
+</body>
+</html>
